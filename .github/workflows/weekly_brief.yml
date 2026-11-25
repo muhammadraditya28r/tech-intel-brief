@@ -1,0 +1,50 @@
+name: Weekly Technical Intelligence Brief
+
+on:
+  schedule:
+    # Runs every Friday at 13:00 UTC (20:00 WIB)
+    - cron: "0 13 * * 5"
+  # Allows manual one-click test runs from the GitHub Actions tab
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  generate-brief:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run brief generator pipeline
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CONTACT_EMAIL: ${{ secrets.CONTACT_EMAIL }}
+          # Optional: add these 3 secrets if you want the draft emailed to you
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+        run: python brief_generator.py
+
+      - name: Commit updated SQLite DB and Markdown draft
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/ briefs/
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: generate weekly intelligence brief and update state"
+            git push
+          else
+            echo "No changes to commit."
+          fi
