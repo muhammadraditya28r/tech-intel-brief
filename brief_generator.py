@@ -24,14 +24,14 @@ CONTACT_EMAIL = os.getenv("CONTACT_EMAIL", "researcher@example.com")
 INSTRUMENT_QUERIES = {
     "Liquid Chromatography (HPLC / UPLC)": (
         '(HPLC OR UPLC OR "liquid chromatography") AND '
-        '(troubleshooting OR "peak tailing" OR "split peak*" OR "baseline drift" '
-        'OR carryover OR "column fouling" OR "method optimization") '
+        '(troubleshooting OR "peak tailing" OR "split peak" OR "split peaks" '
+        'OR "baseline drift" OR carryover OR "column fouling" OR "method optimization") '
         'NOT (clinical OR patient OR wastewater)'
     ),
     "Gas Chromatography (GC / Headspace)": (
         '("gas chromatography" OR "GC-MS" OR "headspace GC") AND '
-        '(troubleshooting OR "residual solvent*" OR "septum bleed" OR "column bleed" '
-        'OR liner OR "splitless" OR carryover OR "peak distortion") '
+        '(troubleshooting OR "residual solvent" OR "residual solvents" OR "septum bleed" '
+        'OR "column bleed" OR liner OR splitless OR carryover OR "peak distortion") '
         'NOT (soil OR atmosphere OR clinical)'
     ),
     "Spectrophotometry (UV-Vis / FTIR)": (
@@ -42,7 +42,8 @@ INSTRUMENT_QUERIES = {
     ),
     "Atomic Absorption Spectroscopy (AAS)": (
         '("atomic absorption" OR "graphite furnace" OR GFAAS OR FAAS) AND '
-        '(pharmaceutical OR "elemental impurit*" OR "heavy metal*" OR "matrix interference" '
+        '(pharmaceutical OR "elemental impurity" OR "elemental impurities" '
+        'OR "heavy metal" OR "heavy metals" OR "matrix interference" '
         'OR "matrix modifier" OR digestion OR validation) '
         'NOT (soil OR river OR sediment)'
     ),
@@ -151,14 +152,22 @@ def strip_html(raw_text: str) -> str:
 
 def fetch_for_instrument(instrument: str, query: str, conn: sqlite3.Connection) -> list[dict]:
     from_date = (datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+    filter_clauses = [
+        f"title_and_abstract.search:{query}",
+        f"from_publication_date:{from_date}",
+        "has_abstract:true",
+        "type:article|review",
+        "language:en",
+    ]
     params = {
-        "search.title_and_abstract": query,
-        "filter": f"from_publication_date:{from_date},has_abstract:true,type:article|review,language:en",
+        "filter": ",".join(filter_clauses),
         "sort": "publication_date:desc",
         "per-page": 10,
         "mailto": CONTACT_EMAIL,
     }
     resp = requests.get("https://api.openalex.org/works", params=params, timeout=30)
+    if not resp.ok:
+        print(f"OpenAlex API error ({resp.status_code}) for {instrument}: {resp.text}")
     resp.raise_for_status()
 
     unseen = []
