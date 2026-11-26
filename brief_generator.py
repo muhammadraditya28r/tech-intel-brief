@@ -1,3 +1,4 @@
+import time
 import os
 import random
 import re
@@ -21,37 +22,27 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 CONTACT_EMAIL = os.getenv("CONTACT_EMAIL", "researcher@example.com")
 
 # 5 Core Pharmaceutical Lab Instruments / Techniques
+# Each query uses <= 5 boolean operators to avoid OpenAlex's broad-query throttle
 INSTRUMENT_QUERIES = {
     "Liquid Chromatography (HPLC / UPLC)": (
-        '(HPLC OR UPLC OR "liquid chromatography") AND '
-        '(troubleshooting OR "peak tailing" OR "split peak" OR "split peaks" '
-        'OR "baseline drift" OR carryover OR "column fouling" OR "method optimization") '
-        'NOT (clinical OR patient OR wastewater)'
+        '(HPLC OR UPLC) AND '
+        '(troubleshooting OR "peak tailing" OR "baseline drift" OR carryover)'
     ),
     "Gas Chromatography (GC / Headspace)": (
-        '("gas chromatography" OR "GC-MS" OR "headspace GC") AND '
-        '(troubleshooting OR "residual solvent" OR "residual solvents" OR "septum bleed" '
-        'OR "column bleed" OR liner OR splitless OR carryover OR "peak distortion") '
-        'NOT (soil OR atmosphere OR clinical)'
+        '("gas chromatography" OR "GC-MS") AND '
+        '(troubleshooting OR "residual solvent" OR bleed OR carryover)'
     ),
     "Spectrophotometry (UV-Vis / FTIR)": (
-        '("UV-Vis" OR spectrophotometry OR "infrared spectroscopy" OR FTIR) AND '
-        '(pharmaceutical OR assay OR calibration OR "stray light" OR cuvette '
-        'OR baseline OR validation OR troubleshooting) '
-        'NOT (astrophysics OR solar OR clinical)'
+        '("UV-Vis" OR spectrophotometry OR FTIR) AND '
+        '(pharmaceutical OR validation OR troubleshooting)'
     ),
     "Atomic Absorption Spectroscopy (AAS)": (
-        '("atomic absorption" OR "graphite furnace" OR GFAAS OR FAAS) AND '
-        '(pharmaceutical OR "elemental impurity" OR "elemental impurities" '
-        'OR "heavy metal" OR "heavy metals" OR "matrix interference" '
-        'OR "matrix modifier" OR digestion OR validation) '
-        'NOT (soil OR river OR sediment)'
+        '("atomic absorption" OR GFAAS OR FAAS) AND '
+        '(pharmaceutical OR "elemental impurity" OR interference)'
     ),
     "Dissolution Testing (USP Apparatus 1 & 2)": (
-        '("dissolution testing" OR "dissolution apparatus" OR "USP apparatus" OR "dissolution method") AND '
-        '(deaeration OR coning OR paddle OR basket OR surfactant OR variability '
-        'OR hydrodynamics OR troubleshooting) '
-        'NOT (clinical OR patient)'
+        '("dissolution testing" OR "USP apparatus") AND '
+        '(deaeration OR coning OR surfactant OR variability)'
     ),
 }
 
@@ -165,10 +156,23 @@ def fetch_for_instrument(instrument: str, query: str, conn: sqlite3.Connection) 
         "per-page": 10,
         "mailto": CONTACT_EMAIL,
     }
-    resp = requests.get("https://api.openalex.org/works", params=params, timeout=30)
-    if not resp.ok:
+
+    resp = None
+    for attempt in range(3):
+        resp = requests.get("https://api.openalex.org/works", params=params, timeout=30)
+        if resp.status_code == 429:
+            wait_seconds = int(resp.headers.get("Retry-After", 2)) + 1
+            print(f"Rate limited on {instrument}; retrying in {wait_seconds}s...")
+            time.sleep(wait_seconds)
+            continue
+        break
+
+    if resp is not None and not resp.ok:
         print(f"OpenAlex API error ({resp.status_code}) for {instrument}: {resp.text}")
     resp.raise_for_status()
+
+    # Polite pacing between instrument API calls
+    time.sleep(1.2)
 
     unseen = []
     for work in resp.json().get("results", []):
