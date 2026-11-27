@@ -18,7 +18,7 @@ OUTPUT_DIR = Path("briefs")
 LOOKBACK_DAYS = 21  # Wider window ensures fresh papers across all 5 instruments
 
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 CONTACT_EMAIL = os.getenv("CONTACT_EMAIL", "researcher@example.com")
 
 # 5 Core Pharmaceutical Lab Instruments / Techniques
