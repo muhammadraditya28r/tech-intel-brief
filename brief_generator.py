@@ -18,7 +18,7 @@ OUTPUT_DIR = Path("briefs")
 LOOKBACK_DAYS = 21  # Wider window ensures fresh papers across all 5 instruments
 
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-4-carbon")
 CONTACT_EMAIL = os.getenv("CONTACT_EMAIL", "researcher@example.com")
 
 # 5 Core Pharmaceutical Lab Instruments / Techniques
@@ -302,32 +302,45 @@ CANDIDATE POOL:
         thinking_config=types.ThinkingConfig(thinking_budget=512),
     )
 
-    for attempt in range(1, 3):
-        try:
-            print(
-                f"Streaming synthesis from Gemini ({GEMINI_MODEL}, attempt {attempt})...",
-                flush=True,
-            )
-            chunks: list[str] = []
-            for chunk in client.models.generate_content_stream(
-                model=GEMINI_MODEL,
-                contents=prompt,
-                config=config,
-            ):
-                if chunk.text:
-                    chunks.append(chunk.text)
+    # Try primary model first, then fall back to stable Flash models if overloaded
+    model_chain = list(dict.fromkeys([
+        GEMINI_MODEL,
+        "gemini-4-hydrogen",
+        "gemini-4-neon",
+        "gemini-3.8-flash",
+    ]))
 
-            result = "".join(chunks).strip()
-            if result:
-                print("Gemini synthesis complete.", flush=True)
-                return result
-        except Exception as exc:
-            print(f"Attempt {attempt} failed: {exc}", flush=True)
-            if attempt == 2:
-                raise
-            time.sleep(5)
+    last_error: Exception | None = None
+    for round_num in range(1, 3):
+        for model_name in model_chain:
+            try:
+                print(
+                    f"Streaming synthesis from {model_name} (round {round_num})...",
+                    flush=True,
+                )
+                chunks: list[str] = []
+                for chunk in client.models.generate_content_stream(
+                    model=model_name,
+                    contents=prompt,
+                    config=config,
+                ):
+                    if chunk.text:
+                        chunks.append(chunk.text)
 
-    raise RuntimeError("Gemini returned an empty response.")
+                result = "".join(chunks).strip()
+                if result:
+                    print(f"Synthesis complete using {model_name}.", flush=True)
+                    return result
+            except Exception as exc:
+                last_error = exc
+                print(f"{model_name} failed: {exc}", flush=True)
+                time.sleep(3)
+
+        if round_num < 2:
+            print("All models temporarily busy; waiting 20s before retry round...", flush=True)
+            time.sleep(20)
+
+    raise RuntimeError(f"All Gemini fallback models failed: {last_error}")
 
 
 # --- Optional Email Delivery ---
