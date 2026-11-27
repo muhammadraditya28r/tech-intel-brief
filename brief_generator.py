@@ -1,16 +1,16 @@
-import time
 import os
 import random
 import re
 import smtplib
 import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
 
-import feedparser
 import requests
 from google import genai
+from google.genai import types
 
 # --- Configuration ---
 DB_PATH = Path("data/seen_items.db")
@@ -18,7 +18,7 @@ OUTPUT_DIR = Path("briefs")
 LOOKBACK_DAYS = 21  # Wider window ensures fresh papers across all 5 instruments
 
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 CONTACT_EMAIL = os.getenv("CONTACT_EMAIL", "researcher@example.com")
 
 # 5 Core Pharmaceutical Lab Instruments / Techniques
@@ -45,11 +45,6 @@ INSTRUMENT_QUERIES = {
         '(deaeration OR coning OR surfactant OR variability)'
     ),
 }
-
-# Optional chromatography/spectroscopy RSS feeds to supplement OpenAlex
-RSS_FEEDS = [
-    # Add any preferred lab-practice RSS feeds here
-]
 
 
 # --- SQLite State & Deduplication ---
@@ -142,6 +137,7 @@ def strip_html(raw_text: str) -> str:
 
 
 def fetch_for_instrument(instrument: str, query: str, conn: sqlite3.Connection) -> list[dict]:
+    print(f"Querying OpenAlex for {instrument}...", flush=True)
     from_date = (datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d")
     filter_clauses = [
         f"title_and_abstract.search:{query}",
@@ -162,13 +158,13 @@ def fetch_for_instrument(instrument: str, query: str, conn: sqlite3.Connection) 
         resp = requests.get("https://api.openalex.org/works", params=params, timeout=30)
         if resp.status_code == 429:
             wait_seconds = int(resp.headers.get("Retry-After", 2)) + 1
-            print(f"Rate limited on {instrument}; retrying in {wait_seconds}s...")
+            print(f"Rate limited on {instrument}; retrying in {wait_seconds}s...", flush=True)
             time.sleep(wait_seconds)
             continue
         break
 
     if resp is not None and not resp.ok:
-        print(f"OpenAlex API error ({resp.status_code}) for {instrument}: {resp.text}")
+        print(f"OpenAlex API error ({resp.status_code}) for {instrument}: {resp.text}", flush=True)
     resp.raise_for_status()
 
     # Polite pacing between instrument API calls
@@ -192,6 +188,7 @@ def fetch_for_instrument(instrument: str, query: str, conn: sqlite3.Connection) 
                 "summary": abstract,
             }
         )
+    print(f"Found {len(unseen)} unseen items for {instrument}.", flush=True)
     return unseen
 
 
@@ -223,7 +220,11 @@ def build_seven_topic_pool(conn: sqlite3.Connection) -> list[dict]:
 
 # --- AI Deep-Dive Synthesis ---
 def generate_deep_dive_brief(candidates: list[dict], issue_num: int) -> str:
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    # Enforce a 120-second hard timeout so Gemini calls never hang indefinitely
+    client = genai.Client(
+        api_key=GEMINI_API_KEY,
+        http_options=types.HttpOptions(timeout=120_000),
+    )
 
     formatted_candidates = "\n\n".join(
         f"CANDIDATE {idx + 1}\n"
@@ -301,10 +302,12 @@ CANDIDATE POOL:
 {formatted_candidates}
 """.strip()
 
+    print(f"Calling Gemini ({GEMINI_MODEL}) with {len(candidates)} candidates...", flush=True)
     response = client.models.generate_content(
         model=GEMINI_MODEL,
         contents=prompt,
     )
+    print("Gemini synthesis complete.", flush=True)
     return response.text.strip()
 
 
@@ -315,7 +318,7 @@ def send_email_draft(subject: str, markdown_body: str) -> None:
     recipient = os.getenv("RECIPIENT_EMAIL", smtp_user)
 
     if not (smtp_user and smtp_pass and recipient):
-        print("SMTP credentials not configured; skipping email delivery.")
+        print("SMTP credentials not configured; skipping email delivery.", flush=True)
         return
 
     msg = EmailMessage()
@@ -324,10 +327,11 @@ def send_email_draft(subject: str, markdown_body: str) -> None:
     msg["To"] = recipient
     msg.set_content(markdown_body)
 
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+    print("Connecting to Gmail SMTP...", flush=True)
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as server:
         server.login(smtp_user, smtp_pass)
         server.send_message(msg)
-    print(f"Draft emailed to {recipient}.")
+    print(f"Draft emailed to {recipient}.", flush=True)
 
 
 # --- Main Orchestrator ---
@@ -338,9 +342,11 @@ def main() -> None:
     conn = sqlite3.connect(DB_PATH)
     init_db(conn)
 
+    print("Fetching candidates from OpenAlex...", flush=True)
     candidates = build_seven_topic_pool(conn)
+    print(f"Collected {len(candidates)} candidates.", flush=True)
     if not candidates:
-        print("No new instrument topics found. Exiting without API call.")
+        print("No new instrument topics found. Exiting without API call.", flush=True)
         conn.close()
         return
 
@@ -350,7 +356,7 @@ def main() -> None:
     date_slug = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     output_file = OUTPUT_DIR / f"issue_{issue_num:02d}_{date_slug}.md"
     output_file.write_text(brief_markdown + "\n", encoding="utf-8")
-    print(f"Saved 6-minute deep-dive draft to {output_file}")
+    print(f"Saved 6-minute deep-dive draft to {output_file}", flush=True)
 
     # Mark only items whose URL appeared in the generated issue so unused candidates remain eligible next week
     referenced_items = [c for c in candidates if c["url"] in brief_markdown] or candidates[:1]
