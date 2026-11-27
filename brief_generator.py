@@ -217,14 +217,9 @@ def build_seven_topic_pool(conn: sqlite3.Connection) -> list[dict]:
 
     return pool
 
-
 # --- AI Deep-Dive Synthesis ---
 def generate_deep_dive_brief(candidates: list[dict], issue_num: int) -> str:
-    # Enforce a 120-second hard timeout so Gemini calls never hang indefinitely
-    client = genai.Client(
-        api_key=GEMINI_API_KEY,
-        http_options=types.HttpOptions(timeout=120_000),
-    )
+    client = genai.Client(api_key=GEMINI_API_KEY)
 
     formatted_candidates = "\n\n".join(
         f"CANDIDATE {idx + 1}\n"
@@ -232,7 +227,7 @@ def generate_deep_dive_brief(candidates: list[dict], issue_num: int) -> str:
         f"Title: {item['title']}\n"
         f"Published: {item['published_date']}\n"
         f"URL: {item['url']}\n"
-        f"Abstract: {item['summary']}"
+        f"Abstract: {item['summary'][:1000]}"
         for idx, item in enumerate(candidates)
     )
 
@@ -302,13 +297,37 @@ CANDIDATE POOL:
 {formatted_candidates}
 """.strip()
 
-    print(f"Calling Gemini ({GEMINI_MODEL}) with {len(candidates)} candidates...", flush=True)
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=prompt,
+    config = types.GenerateContentConfig(
+        temperature=0.4,
+        thinking_config=types.ThinkingConfig(thinking_budget=512),
     )
-    print("Gemini synthesis complete.", flush=True)
-    return response.text.strip()
+
+    for attempt in range(1, 3):
+        try:
+            print(
+                f"Streaming synthesis from Gemini ({GEMINI_MODEL}, attempt {attempt})...",
+                flush=True,
+            )
+            chunks: list[str] = []
+            for chunk in client.models.generate_content_stream(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=config,
+            ):
+                if chunk.text:
+                    chunks.append(chunk.text)
+
+            result = "".join(chunks).strip()
+            if result:
+                print("Gemini synthesis complete.", flush=True)
+                return result
+        except Exception as exc:
+            print(f"Attempt {attempt} failed: {exc}", flush=True)
+            if attempt == 2:
+                raise
+            time.sleep(5)
+
+    raise RuntimeError("Gemini returned an empty response.")
 
 
 # --- Optional Email Delivery ---
